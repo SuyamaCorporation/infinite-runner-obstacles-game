@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>無限スクロール 障害物 ランナーゲーム</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    #gameCanvas { display: block; }
+    #gameContainer { touch-action: none; }
+  </style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen flex flex-col">
+  <div class="max-w-3xl mx-auto px-4 py-6 flex-1 flex flex-col">
+    <h1 class="text-2xl font-bold text-center mb-1 text-lime-400">無限スクロール ランナーゲーム</h1>
+    <p class="text-center text-gray-400 mb-4 text-xs">スペース/↑キーでジャンプ・↓キーでスライド</p>
+
+    <!-- スコア & ハイスコア -->
+    <div class="flex justify-between items-center mb-3 px-2">
+      <div class="text-center">
+        <div class="text-xs text-gray-400">スコア</div>
+        <div id="scoreDisplay" class="text-2xl font-bold text-lime-400">0</div>
+      </div>
+      <div id="gameStatusText" class="text-lg font-bold text-white text-center">スタート準備完了</div>
+      <div class="text-center">
+        <div class="text-xs text-gray-400">ハイスコア</div>
+        <div id="highScoreDisplay" class="text-2xl font-bold text-yellow-400">0</div>
+      </div>
+    </div>
+
+    <!-- ゲームキャンバス -->
+    <div id="gameContainer" class="bg-sky-950 rounded-xl overflow-hidden border border-gray-700 flex-1 flex items-center justify-center">
+      <canvas id="gameCanvas" width="700" height="220" aria-label="ランナーゲーム" tabindex="0" role="application" aria-description="スペースキーでジャンプ、下矢印キーでスライド"></canvas>
+    </div>
+
+    <!-- ボタン -->
+    <div class="flex gap-3 mt-4">
+      <button id="startBtn" class="flex-1 bg-lime-600 hover:bg-lime-500 text-white font-bold py-3 rounded-xl text-lg transition-colors focus:outline-none focus:ring-2 focus:ring-lime-400" role="button" aria-label="ゲームを開始">
+        スタート
+      </button>
+      <button id="jumpBtnMobile" class="bg-blue-600 hover:bg-blue-500 text-white font-bold px-6 py-3 rounded-xl transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 sm:hidden" role="button" aria-label="ジャンプ">
+        ↑ Jump
+      </button>
+    </div>
+
+    <!-- 操作ガイド -->
+    <div class="mt-3 text-center text-xs text-gray-500">
+      PC: スペース/↑=ジャンプ・↓=スライド | モバイル: スタートボタン後に画面タップでジャンプ
+    </div>
+  </div>
+
+  <script>
+    const STORAGE_KEY = 'runner_highscore';
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+
+    const GROUND_Y = H - 40;
+    const PLAYER_X = 80;
+
+    let state = 'idle'; // idle, running, dead
+    let score = 0, highScore = 0, frame = 0;
+    let speed = 5;
+    let player, obstacles, clouds;
+    let animId = null;
+
+    function loadHighScore() {
+      try { return parseInt(localStorage.getItem(STORAGE_KEY) || '0'); } catch { return 0; }
+    }
+    function saveHighScore(s) { localStorage.setItem(STORAGE_KEY, String(s)); }
+
+    function initGame() {
+      score = 0;
+      frame = 0;
+      speed = 5;
+      player = {
+        x: PLAYER_X, y: GROUND_Y - 40, w: 30, h: 40,
+        vy: 0, onGround: true, sliding: false,
+        jumpCount: 0,
+      };
+      obstacles = [];
+      clouds = [
+        { x: 200, y: 40, w: 80, h: 25, speed: 1 },
+        { x: 500, y: 20, w: 100, h: 30, speed: 0.7 },
+      ];
+    }
+
+    function spawnObstacle() {
+      const type = Math.random() < 0.55 ? 'tall' : 'low';
+      if (type === 'tall') {
+        obstacles.push({ x: W + 20, y: GROUND_Y - 50, w: 22, h: 50, type: 'tall' });
+      } else {
+        obstacles.push({ x: W + 20, y: GROUND_Y - 20, w: 40, h: 20, type: 'low' });
+      }
+    }
+
+    let nextSpawn = 80;
+
+    function update() {
+      frame++;
+      score = Math.floor(frame / 6);
+      speed = 5 + Math.floor(score / 200) * 0.5;
+
+      // 雲
+      clouds.forEach(c => {
+        c.x -= c.speed;
+        if (c.x + c.w < 0) c.x = W + 10;
+      });
+
+      // プレイヤー物理
+      if (!player.onGround) {
+        player.vy += 0.7;
+        player.y += player.vy;
+        if (player.y >= GROUND_Y - (player.sliding ? 20 : 40)) {
+          player.y = GROUND_Y - (player.sliding ? 20 : 40);
+          player.vy = 0;
+          player.onGround = true;
+          player.jumpCount = 0;
+        }
+      }
+
+      // 障害物
+      if (frame >= nextSpawn) {
+        spawnObstacle();
+        nextSpawn = frame + 60 + Math.floor(Math.random() * 60) - Math.min(20, Math.floor(score / 100));
+      }
+      obstacles.forEach(o => { o.x -= speed; });
+      obstacles = obstacles.filter(o => o.x + o.w > -10);
+
+      // 当たり判定
+      const ph = player.sliding ? 20 : 40;
+      const py = GROUND_Y - ph;
+      for (const o of obstacles) {
+        if (player.x + 4 < o.x + o.w && player.x + player.w - 4 > o.x &&
+            py + 2 < o.y + o.h && py + ph > o.y + 2) {
+          return false; // collision
+        }
+      }
+      return true;
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+
+      // 空グラデーション
+      const sky = ctx.createLinearGradient(0, 0, 0, H);
+      sky.addColorStop(0, '#0c1445');
+      sky.addColorStop(1, '#1a3a6b');
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, W, H);
+
+      // 雲
+      clouds.forEach(c => {
+        ctx.fillStyle = 'rgba(255,255,255,0.12)';
+        ctx.beginPath();
+        ctx.ellipse(c.x + c.w / 2, c.y + c.h / 2, c.w / 2, c.h / 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // 地面
+      ctx.fillStyle = '#4a7c3f';
+      ctx.fillRect(0, GROUND_Y, W, H - GROUND_Y);
+      ctx.fillStyle = '#2d5c2a';
+      ctx.fillRect(0, GROUND_Y, W, 4);
+
+      // 走行ライン（装飾）
+      ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+      ctx.setLineDash([20, 15]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, GROUND_Y + 20);
+      ctx.lineTo(W, GROUND_Y + 20);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // 障害物
+      obstacles.forEach(o => {
+        if (o.type === 'tall') {
+          // 柱（赤い石）
+          const grad = ctx.createLinearGradient(o.x, 0, o.x + o.w, 0);
+          grad.addColorStop(0, '#c0392b');
+          grad.addColorStop(1, '#922b21');
+          ctx.fillStyle = grad;
+          ctx.fillRect(o.x, o.y, o.w, o.h);
+          ctx.fillStyle = '#7b241c';
+          ctx.fillRect(o.x + 2, o.y + 2, o.w - 4, 6);
+        } else {
+          // 低い障害物（緑の草）
+          ctx.fillStyle = '#27ae60';
+          ctx.fillRect(o.x, o.y, o.w, o.h);
+          ctx.fillStyle = '#1e8449';
+          for (let i = 0; i < 3; i++) {
+            ctx.beginPath();
+            ctx.arc(o.x + 6 + i * 14, o.y - 4, 5, 0, Math.PI, true);
+            ctx.fill();
+          }
+        }
+      });
+
+      // プレイヤー
+      const ph = player.sliding ? 20 : 40;
+      const py = player.y;
+      const px = player.x;
+
+      if (player.sliding) {
+        // スライド姿勢
+        ctx.fillStyle = '#3b82f6';
+        ctx.fillRect(px, py, 40, 20);
+        // 頭
+        ctx.fillStyle = '#fde68a';
+        ctx.beginPath();
+        ctx.arc(px + 35, py + 10, 9, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        // 通常姿勢
+        // 脚（走り）
+        const legAnim = Math.sin(frame * 0.3) * 6;
+        ctx.fillStyle = '#1d4ed8';
+        ctx.fillRect(px + 8, py + 24, 8, 16 + legAnim);
+        ctx.fillRect(px + 16, py + 24, 8, 16 - legAnim);
+        // 胴体
+        ctx.fillStyle = '#3b82f6';
+        ctx.fillRect(px + 4, py + 10, 22, 18);
+        // 頭
+        ctx.fillStyle = '#fde68a';
+        ctx.beginPath();
+        ctx.arc(px + 15, py + 7, 9, 0, Math.PI * 2);
+        ctx.fill();
+        // 腕
+        ctx.strokeStyle = '#3b82f6';
+        ctx.lineWidth = 4;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(px + 5, py + 14);
+        ctx.lineTo(px - 2, py + 22 - legAnim);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(px + 25, py + 14);
+        ctx.lineTo(px + 32, py + 22 + legAnim);
+        ctx.stroke();
+      }
+
+      // スコア（キャンバス内）
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      ctx.font = 'bold 14px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText('SCORE ' + score, W - 10, 22);
+      ctx.textAlign = 'left';
+    }
+
+    function drawOverlay(text, sub) {
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(0, 0, W, H);
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 36px sans-serif';
+      ctx.fillStyle = text === 'GAME OVER' ? '#ef4444' : '#4ade80';
+      ctx.fillText(text, W / 2, H / 2 - 10);
+      ctx.font = '16px sans-serif';
+      ctx.fillStyle = '#d1d5db';
+      ctx.fillText(sub, W / 2, H / 2 + 20);
+    }
+
+    function gameLoop() {
+      const alive = update();
+      draw();
+      document.getElementById('scoreDisplay').textContent = score;
+      if (!alive) {
+        state = 'dead';
+        if (score > highScore) {
+          highScore = score;
+          saveHighScore(highScore);
+          document.getElementById('highScoreDisplay').textContent = highScore;
+        }
+        drawOverlay('GAME OVER', 'スコア: ' + score + ' — スタートで再挑戦');
+        document.getElementById('gameStatusText').textContent = 'ゲームオーバー';
+        document.getElementById('startBtn').textContent = 'もう一度';
+        document.getElementById('startBtn').classList.remove('bg-gray-700');
+        document.getElementById('startBtn').classList.add('bg-lime-600');
+        cancelAnimationFrame(animId);
+        return;
+      }
+      animId = requestAnimationFrame(gameLoop);
+    }
+
+    function startGame() {
+      if (animId) cancelAnimationFrame(animId);
+      initGame();
+      state = 'running';
+      nextSpawn = 80;
+      document.getElementById('gameStatusText').textContent = '実行中...';
+      document.getElementById('startBtn').textContent = 'リスタート';
+      document.getElementById('startBtn').classList.remove('bg-lime-600');
+      document.getElementById('startBtn').classList.add('bg-gray-700');
+      animId = requestAnimationFrame(gameLoop);
+      canvas.focus();
+    }
+
+    function jump() {
+      if (state !== 'running') return;
+      if (player.jumpCount < 1) {
+        player.vy = -13;
+        player.onGround = false;
+        player.jumpCount++;
+        if (player.sliding) player.sliding = false;
+      }
+    }
+    function slide() {
+      if (state !== 'running') return;
+      if (player.onGround) {
+        player.sliding = true;
+        player.y = GROUND_Y - 20;
+        setTimeout(() => { if (player) { player.sliding = false; player.y = GROUND_Y - 40; } }, 500);
+      }
+    }
+
+    document.addEventListener('keydown', e => {
+      if (e.key === ' ' || e.key === 'ArrowUp') { e.preventDefault(); jump(); }
+      if (e.key === 'ArrowDown') { e.preventDefault(); slide(); }
+    });
+
+    document.getElementById('startBtn').addEventListener('click', startGame);
+    document.getElementById('jumpBtnMobile').addEventListener('click', jump);
+    canvas.addEventListener('pointerdown', () => { if (state === 'running') jump(); });
+
+    // 初期描画
+    highScore = loadHighScore();
+    document.getElementById('highScoreDisplay').textContent = highScore;
+    initGame();
+    draw();
+    drawOverlay('READY', 'スタートボタンを押してください');
+  </script>
+</body>
+</html>
